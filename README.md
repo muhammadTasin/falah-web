@@ -1,24 +1,30 @@
-<<<<<<< HEAD
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Falah — Ibadah & Amal Tracker (Ramadan-focused)
 
-# Run and deploy your AI Studio app
+Falah is a simple Ibadah & Amal tracker to help Muslims stay consistent—especially during Ramadan—by logging daily worship habits, reflecting on progress, and optionally getting AI-generated daily insights.
 
-This contains everything you need to run your app locally.
+## Why I built this
+Many of us want to track our amal (salah, dhikr, Qur’an, charity, etc.), particularly in Ramadan. Falah focuses on a clean daily workflow: track → reflect → improve gradually.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1OcAE_VbFjI5P7DygPgaCTPaWHtTuK6lX
+## Features
+- Daily Ibadah/Amal tracking (Ramadan-focused, usable year-round)
+- Secure login + private per-user data storage
+- Optional AI “Daily Insight” to summarize progress and suggest next steps
+- Optional personalized reminders (user-selected preference: male / female / neutral)
 
-## Run Locally
+## Tech Stack
+- React + TypeScript (Vite)
+- Firebase Auth (Google)
+- Firestore (per-user daily logs)
+- Firebase Hosting
+- AI integration for daily insights (optional)
 
-**Prerequisites:**  Node.js
+## Data Model
+- `users/{uid}/days/{YYYY-MM-DD}`
 
+## AI Disclaimer
+AI insights are for motivation and reflection only — not religious rulings (fatwa). Please verify religious references using authentic sources if needed.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
-# falah-web
-my first website, made by me 
->>>>>>> 3ef077ac9971ea47bd449a88a2aa390c41ff3256
+## Run locally
+```bash
+npm install
+npm run dev
