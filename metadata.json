@@ -1,0 +1,7 @@
+{
+  "name": "Falah",
+  "description": "Falah - Your companion for spiritual success. A context-aware daily prayer tracking application specifically designed for users in Bangladesh.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
