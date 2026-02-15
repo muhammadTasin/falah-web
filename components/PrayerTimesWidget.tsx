@@ -1,6 +1,7 @@
 
 import React from 'react';
-import { PrayerTimesData, englishToBanglaDigits, PrayerCountdownState } from '../services/prayerTimeService';
+import { PrayerTimesData, PrayerCountdownState } from '../services/prayerTimeService';
+import { formatTimeFromHHmm } from '../services/dateUtils';
 import { Moon, Sun } from 'lucide-react';
 
 interface PrayerTimesWidgetProps {
@@ -19,15 +20,7 @@ const PrayerTimesWidget: React.FC<PrayerTimesWidgetProps> = ({ times, countdown 
 
   // Format Display Time
   const formatDisplayTime = (t: string) => {
-    const [h, m] = t.split(':').map(Number);
-    let hours = h;
-    let ampm = 'AM';
-    if (hours >= 12) {
-        ampm = 'PM';
-        if (hours > 12) hours -= 12;
-    }
-    if (hours === 0) hours = 12; 
-    return `${englishToBanglaDigits(hours)}:${englishToBanglaDigits(m.toString().padStart(2, '0'))}`;
+    return formatTimeFromHHmm(t, 'Asia/Dhaka');
   };
 
   const prayers = [

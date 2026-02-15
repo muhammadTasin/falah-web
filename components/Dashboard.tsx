@@ -1,13 +1,15 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { User } from 'firebase/auth';
-import { DailyLog, PrayerStatus, UserSettings, DayMode } from '../types';
+import { DailyLog, PrayerStatus, UserSettings } from '../types';
 import { getDailyLog, saveDailyLog, getRecentLogs } from '../services/storage';
-import { getFormattedDate, getFormattedDateKey, detectDayMode, getHijriDate } from '../services/dateUtils';
+import { getFormattedDate, detectDayMode, getHijriDate, getDateKeyInTimeZone } from '../services/dateUtils';
 import { getDailyInsight, getConsistencyAnalysis } from '../services/geminiService';
 import { loadDay, listenDay, saveDay } from '../services/firestore';
 import { fetchPrayerTimes, calculatePrayerCountdown, PrayerTimesData, englishToBanglaDigits } from '../services/prayerTimeService';
+import { build15DayReport } from '../services/reporting';
 import { districts } from '../data/districts';
+import { getServerClockOffsetMs, getSyncedNow } from '../services/clock';
 import PrayerItem from './PrayerItem';
 import Settings from './Settings';
 import PrayerTimesWidget from './PrayerTimesWidget';
@@ -25,7 +27,10 @@ interface DashboardProps {
 type TabView = 'today' | 'calendar' | 'dashboard' | 'settings';
 
 const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdateSettings, onLogout }) => {
-  const [currentDate] = useState(new Date());
+  const timeZone = 'Asia/Dhaka';
+  const [currentDate, setCurrentDate] = useState(() => getSyncedNow());
+  const [now, setNow] = useState(() => getSyncedNow());
+  const clockOffsetRef = useRef(0);
   const [activeTab, setActiveTab] = useState<TabView>('today');
   
   // Data States
@@ -40,22 +45,83 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
   const [analysisText, setAnalysisText] = useState<string>('');
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [isDoneAnimating, setIsDoneAnimating] = useState(false);
+  const reportRecords = useMemo(() => {
+    const logs = getRecentLogs(45);
+    if (dailyLog && !logs.some(log => log.date === dailyLog.date)) {
+      return [...logs, dailyLog];
+    }
+    return logs;
+  }, [dailyLog]);
+  const report = useMemo(() => build15DayReport(reportRecords, timeZone), [reportRecords, timeZone]);
 
   // --- 1. Data Loading Logic ---
 
   useEffect(() => {
     const loadTimes = async () => {
-      const data = await fetchPrayerTimes(settings.district, currentDate);
+      const data = await fetchPrayerTimes(settings.district, currentDate, settings.calculationMethod, settings.madhhab);
       setTimes(data);
     };
     loadTimes();
-  }, [settings.district, currentDate]);
+  }, [settings.district, settings.calculationMethod, settings.madhhab, currentDate]);
 
-  const [now, setNow] = useState(new Date());
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
+    let isMounted = true;
+
+    const refreshNow = (offsetMs: number = clockOffsetRef.current) => {
+      const syncedNow = getSyncedNow(offsetMs);
+      setNow(syncedNow);
+      setCurrentDate((previousDate) =>
+        getDateKeyInTimeZone(syncedNow, timeZone) !== getDateKeyInTimeZone(previousDate, timeZone)
+          ? syncedNow
+          : previousDate
+      );
+    };
+
+    const syncClock = async () => {
+      const offset = await getServerClockOffsetMs();
+      if (!isMounted || offset == null) return;
+      clockOffsetRef.current = offset;
+      refreshNow(offset);
+    };
+
+    const handleForeground = () => {
+      if (document.hidden) return;
+      refreshNow();
+      void syncClock();
+    };
+
+    refreshNow();
+    void syncClock();
+    const reSyncTimer = setInterval(() => {
+      void syncClock();
+    }, 5 * 60 * 1000);
+
+    document.addEventListener('visibilitychange', handleForeground);
+    window.addEventListener('focus', handleForeground);
+    window.addEventListener('pageshow', handleForeground);
+
+    return () => {
+      isMounted = false;
+      clearInterval(reSyncTimer);
+      document.removeEventListener('visibilitychange', handleForeground);
+      window.removeEventListener('focus', handleForeground);
+      window.removeEventListener('pageshow', handleForeground);
+    };
+  }, [timeZone]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      const d = getSyncedNow(clockOffsetRef.current);
+      setNow(d);
+      // Keep date-based data in sync when the day changes in the selected timezone.
+      setCurrentDate((previousDate) =>
+        getDateKeyInTimeZone(d, timeZone) !== getDateKeyInTimeZone(previousDate, timeZone)
+          ? d
+          : previousDate
+      );
+    }, 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [timeZone]);
 
   const countdown = useMemo(() => {
     if (!times) return null;
@@ -63,9 +129,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
   }, [times, now]);
 
   useEffect(() => {
-    const mode = detectDayMode(currentDate, settings);
-    const hijriDate = getHijriDate(currentDate, settings.moonSightingOffset);
-    const dateKey = getFormattedDateKey(currentDate);
+    const mode = detectDayMode(currentDate, settings, timeZone);
+    const hijriDate = getHijriDate(currentDate, settings.moonSightingOffset, timeZone);
+    const dateKey = getDateKeyInTimeZone(currentDate, timeZone);
 
     const recentLogs = getRecentLogs(5);
     const userName = user?.displayName || (isGuest ? 'Guest' : 'User');
@@ -75,7 +141,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
         setLoadingInsight(false);
     });
 
-    const localLog = getDailyLog(currentDate, mode);
+    const localLog = getDailyLog(currentDate, mode, timeZone);
     setDailyLog(localLog);
 
     if (user && !isGuest) {
@@ -95,7 +161,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
         });
         return () => unsubscribe();
     }
-  }, [currentDate, settings, user, isGuest]);
+  }, [currentDate, settings, timeZone, user, isGuest]);
 
   // --- 2. Action Handlers ---
 
@@ -142,7 +208,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
   // --- 3. UI Helpers ---
 
   const districtName = districts.find(d => d.id === settings.district)?.nameBn || 'ঢাকা';
-  const hijri = getHijriDate(currentDate, settings.moonSightingOffset);
+  const hijri = getHijriDate(currentDate, settings.moonSightingOffset, timeZone);
   const farzPrayersList = dailyLog?.prayers.filter(p => p.isFarz) || [];
   const totalPrayers = farzPrayersList.length || 0;
   const completedPrayers = farzPrayersList.filter(p => p.status === 'done').length || 0;
@@ -175,11 +241,68 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
     </div>
   );
 
+  const BarChart: React.FC<{ labels: string[]; data: number[] }> = ({ labels, data }) => {
+    const maxValue = Math.max(1, ...data);
+    return (
+      <div className="w-full">
+        <div className="flex items-end gap-1 h-24">
+          {data.map((value, idx) => (
+            <div key={`${labels[idx]}-${idx}`} className="flex-1 flex items-end">
+              <div
+                className="w-full rounded-md bg-emerald-400/80"
+                style={{ height: `${Math.round((value / maxValue) * 100)}%` }}
+              />
+            </div>
+          ))}
+        </div>
+        <div className="mt-2 flex justify-between text-[9px] text-gray-500 font-medium">
+          {labels.map((label, idx) => (
+            <span key={`${label}-${idx}`} className="flex-1 text-center leading-none">
+              {englishToBanglaDigits(label)}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const PieChart: React.FC<{ labels: string[]; data: number[] }> = ({ labels, data }) => {
+    const total = data.reduce((sum, val) => sum + val, 0);
+    const colors = ['#10b981', '#f59e0b', '#ef4444'];
+    let start = 0;
+    const segments = data.map((value, idx) => {
+      const percent = total > 0 ? (value / total) * 100 : 0;
+      const seg = `${colors[idx % colors.length]} ${start}% ${start + percent}%`;
+      start += percent;
+      return seg;
+    });
+    return (
+      <div className="flex items-center gap-4">
+        <div
+          className="w-20 h-20 rounded-full shrink-0"
+          style={{ background: `conic-gradient(${segments.join(', ')})` }}
+          aria-label="distribution chart"
+        />
+        <div className="flex-1 space-y-1 text-xs text-gray-600">
+          {labels.map((label, idx) => (
+            <div key={label} className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: colors[idx % colors.length] }} />
+                <span>{label}</span>
+              </div>
+              <span className="font-semibold text-gray-700">{englishToBanglaDigits(String(data[idx] ?? 0))}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   const CollapsibleHeader = () => (
     <div className="mb-4 px-2 flex justify-between items-end">
         <div>
             <h1 className="text-3xl font-bold text-gray-800 font-serif leading-tight">
-                {getFormattedDate(currentDate)}
+                {getFormattedDate(currentDate, timeZone)}
             </h1>
             <div className="flex items-center gap-2 text-gray-600 text-xs font-semibold mt-1">
                 <Calendar className="w-3.5 h-3.5 text-emerald-600" />
@@ -367,7 +490,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
             {/* Calendar View */}
             {activeTab === 'calendar' && (
                 <div className="animate-in fade-in slide-in-from-right-4">
-                    <CalendarView districtId={settings.district} onClose={() => setActiveTab('today')} />
+                    <CalendarView
+                        districtId={settings.district}
+                        calculationMethod={settings.calculationMethod}
+                        madhhab={settings.madhhab}
+                        onClose={() => setActiveTab('today')}
+                    />
                 </div>
             )}
         </div>
@@ -437,7 +565,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
                             <Trophy className="w-10 h-10 text-white" />
                         </div>
                         <h2 className="text-2xl font-bold text-gray-800 font-serif">আজকের রিপোর্ট</h2>
-                        <p className="text-gray-500 text-sm mb-6">{getFormattedDate(currentDate)}</p>
+                        <p className="text-gray-500 text-sm mb-6">{getFormattedDate(currentDate, timeZone)}</p>
                         
                         <div className="grid grid-cols-2 gap-4 mb-6">
                             <div className="bg-emerald-50/80 p-5 rounded-2xl border border-emerald-100">
@@ -468,9 +596,48 @@ const Dashboard: React.FC<DashboardProps> = ({ user, isGuest, settings, onUpdate
                                 </div>
                             )
                         ) : (
-                            <div className="bg-gray-50/80 p-5 rounded-2xl text-left text-sm text-gray-700 leading-relaxed max-h-48 overflow-y-auto border border-gray-100">
-                                {analysisText}
-                            </div>
+                            <>
+                                <div className="bg-gray-50/80 p-5 rounded-2xl text-left text-sm text-gray-700 leading-relaxed max-h-48 overflow-y-auto border border-gray-100">
+                                    {analysisText}
+                                </div>
+                                <div className="mt-4 bg-gray-50/80 p-5 rounded-2xl text-left text-sm text-gray-700 border border-gray-100">
+                                    <h3 className="text-sm font-bold text-gray-700 mb-3">Last 15 Days</h3>
+                                    <div className="grid grid-cols-2 gap-3 mb-4">
+                                        <div className="bg-white/80 p-3 rounded-xl border border-gray-100">
+                                            <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider mb-1">Completion</p>
+                                            <p className="text-xl font-bold text-emerald-800">
+                                                {englishToBanglaDigits(String(Math.round(report.summary.completionRate)))}%
+                                            </p>
+                                        </div>
+                                        <div className="bg-white/80 p-3 rounded-xl border border-gray-100">
+                                            <p className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider mb-1">Completed</p>
+                                            <p className="text-xl font-bold text-emerald-800">
+                                                {englishToBanglaDigits(String(report.summary.totalCompleted))}/{englishToBanglaDigits(String(report.summary.totalItems))}
+                                            </p>
+                                        </div>
+                                        <div className="bg-white/80 p-3 rounded-xl border border-gray-100">
+                                            <p className="text-[10px] text-orange-600 font-bold uppercase tracking-wider mb-1">Missed</p>
+                                            <p className="text-xl font-bold text-orange-700">
+                                                {englishToBanglaDigits(String(report.summary.missed))}
+                                            </p>
+                                        </div>
+                                        <div className="bg-white/80 p-3 rounded-xl border border-gray-100">
+                                            <p className="text-[10px] text-blue-600 font-bold uppercase tracking-wider mb-1">Streak</p>
+                                            <p className="text-xl font-bold text-blue-700">
+                                                {englishToBanglaDigits(String(report.summary.streak ?? 0))}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="bg-white/80 p-3 rounded-xl border border-gray-100 mb-4">
+                                        <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-2">Completed per Day</p>
+                                        <BarChart labels={report.barChart.labels} data={report.barChart.data} />
+                                    </div>
+                                    <div className="bg-white/80 p-3 rounded-xl border border-gray-100">
+                                        <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-2">Distribution</p>
+                                        <PieChart labels={report.pieChart.labels} data={report.pieChart.data} />
+                                    </div>
+                                </div>
+                            </>
                         )}
                     </div>
                 </div>

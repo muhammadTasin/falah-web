@@ -1,9 +1,10 @@
 
 import { DailyLog, PrayerId, PrayerRecord, UserSettings, PrayerStatus } from '../types';
-import { getFormattedDateKey } from './dateUtils';
+import { getDateKeyInTimeZone, getFormattedDateKey } from './dateUtils';
 
 const STORAGE_KEY_LOGS = 'deen_tracker_logs';
 const STORAGE_KEY_SETTINGS = 'deen_tracker_settings';
+const DEFAULT_LOG_TIME_ZONE = 'Asia/Dhaka';
 
 // Default Settings
 const defaultSettings: UserSettings = {
@@ -27,12 +28,14 @@ export const saveSettings = (settings: UserSettings) => {
   localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings));
 };
 
-export const getDailyLog = (date: Date, mode: string): DailyLog => {
-  const dateKey = getFormattedDateKey(date);
+export const getDailyLog = (date: Date, mode: string, timeZone: string = DEFAULT_LOG_TIME_ZONE): DailyLog => {
+  const dateKey = getDateKeyInTimeZone(date, timeZone);
+  const legacyDateKey = getFormattedDateKey(date);
   const allLogs = JSON.parse(localStorage.getItem(STORAGE_KEY_LOGS) || '{}');
-  
-  if (allLogs[dateKey]) {
-    const log = allLogs[dateKey];
+
+  const existingLog = allLogs[dateKey] || (legacyDateKey !== dateKey ? allLogs[legacyDateKey] : null);
+  if (existingLog) {
+    const log = { ...existingLog, date: dateKey } as DailyLog;
     if (!log.amols) {
         log.amols = { surahWakiah: false, surahMulk: false, surahBaqarahLast2: false, threeQuls: false };
     }
@@ -42,6 +45,15 @@ export const getDailyLog = (date: Date, mode: string): DailyLog => {
     }
     if (typeof log.quranAyahs !== 'number') {
         log.quranAyahs = 0;
+    }
+
+    // One-time migration from legacy local-date key to timezone-based key.
+    if (!allLogs[dateKey]) {
+      allLogs[dateKey] = log;
+      if (legacyDateKey !== dateKey) {
+        delete allLogs[legacyDateKey];
+      }
+      localStorage.setItem(STORAGE_KEY_LOGS, JSON.stringify(allLogs));
     }
     return log;
   }

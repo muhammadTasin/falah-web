@@ -49,6 +49,7 @@ export interface UserSettings {
   madhhab: 'hanafi' | 'shafi';
   useMoonSighting: boolean;
   moonSightingOffset: number; // days to adjust
+  timezone?: string;
 }
 
 export interface HijriDate {

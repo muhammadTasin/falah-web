@@ -1,7 +1,9 @@
 
-import { District, districts } from '../data/districts';
-import { getDhakaTimesForDate } from './ifbCalendarData';
+import { districts } from '../data/districts';
+import districtCoords from '../data/districtCoords.json';
 import { getHijriDate } from './dateUtils';
+import { getTimeZoneDateParts } from './dateUtils';
+import { CalculationMethod, Coordinates, Madhab, PrayerTimes } from 'adhan';
 
 export interface PrayerTimesData {
   Fajr: string;   // Fajr Start
@@ -23,70 +25,87 @@ export interface PrayerTimesData {
   }
 }
 
-// Helper to add minutes to "HH:mm" time
-const addMinutes = (timeStr: string, minutes: number): string => {
-    const [h, m] = timeStr.split(':').map(Number);
-    const date = new Date();
-    date.setHours(h, m, 0, 0);
-    date.setMinutes(date.getMinutes() + minutes);
-    
-    const newH = date.getHours().toString().padStart(2, '0');
-    const newM = date.getMinutes().toString().padStart(2, '0');
-    return `${newH}:${newM}`;
+const TIME_ZONE = 'Asia/Dhaka';
+
+const formatToHHmm = (date: Date, timeZone: string = TIME_ZONE): string => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const hour = parts.find(p => p.type === 'hour')?.value ?? '00';
+  const minute = parts.find(p => p.type === 'minute')?.value ?? '00';
+  return `${hour}:${minute}`;
 };
 
-export const fetchPrayerTimes = async (districtId: string, date: Date): Promise<PrayerTimesData | null> => {
-    return calculateLocalPrayerTimes(districtId, date);
+const timeToMinutes = (timeStr: string): number => {
+  const [h, m] = timeStr.split(':').map(Number);
+  return h * 60 + m;
 };
 
-export const fetchMonthlyPrayerTimes = async (districtId: string, month: number, year: number): Promise<PrayerTimesData[]> => {
+export const fetchPrayerTimes = async (
+  districtId: string,
+  date: Date,
+  calculationMethod?: string,
+  madhhab?: 'hanafi' | 'shafi'
+): Promise<PrayerTimesData | null> => {
+    return calculateLocalPrayerTimes(districtId, date, calculationMethod, madhhab);
+};
+
+export const fetchMonthlyPrayerTimes = async (
+  districtId: string,
+  month: number,
+  year: number,
+  calculationMethod?: string,
+  madhhab?: 'hanafi' | 'shafi'
+): Promise<PrayerTimesData[]> => {
     const results: PrayerTimesData[] = [];
     const daysInMonth = new Date(year, month, 0).getDate();
 
     for (let d = 1; d <= daysInMonth; d++) {
         const date = new Date(year, month - 1, d);
-        const data = await calculateLocalPrayerTimes(districtId, date);
+        const data = await calculateLocalPrayerTimes(districtId, date, calculationMethod, madhhab);
         if (data) results.push(data);
     }
     return results;
 };
 
-// Core Calculation Logic using IFB Data
-const calculateLocalPrayerTimes = async (districtId: string, date: Date): Promise<PrayerTimesData | null> => {
+// Core Calculation Logic using Coordinates
+const calculateLocalPrayerTimes = async (
+  districtId: string,
+  date: Date,
+  calculationMethod?: string,
+  madhhab?: 'hanafi' | 'shafi'
+): Promise<PrayerTimesData | null> => {
     const district = districts.find(d => d.id === districtId) || districts[0];
-    
-    // 1. Get Base Times for Dhaka
-    // [SehriEnd, Sunrise, Dhuhr, Asr, Maghrib, Isha]
-    const baseTimes = getDhakaTimesForDate(date);
-    
-    // 2. Apply District Offsets
-    // Sehri Offset affects: Sehri End (Imsak) and Fajr Start
-    // Iftar Offset affects: Maghrib, Isha.
-    // Sunrise/Dhuhr/Asr: Usually follow a mix or longitude. 
-    // IFB rule of thumb: 
-    // - Sunrise follows Sehri offset roughly (Sun rises East first).
-    // - Asr follows Iftar offset roughly (Sun sets East first).
-    // - Dhuhr is mid-point.
-    
-    const sehriOffset = district.offsetSehri;
-    const iftarOffset = district.offsetIftar;
+    const coords = (districtCoords as Record<string, { lat: number; lng: number }>)[district.id] || {
+      lat: district.lat,
+      lng: district.lng,
+    };
 
-    const imsak = addMinutes(baseTimes[0], sehriOffset); // Sehri End
-    const fajr = imsak; // Fajr begins when Sehri ends (Subh Sadiq)
-    const sunrise = addMinutes(baseTimes[1], sehriOffset); // Approx follows Eastern shift
-    const dhuhr = addMinutes(baseTimes[2], Math.round((sehriOffset + iftarOffset) / 2)); 
-    const asr = addMinutes(baseTimes[3], iftarOffset); 
-    const maghrib = addMinutes(baseTimes[4], iftarOffset); // Iftar
+    const { year, month, day } = getTimeZoneDateParts(TIME_ZONE, date);
+    const prayerDate = new Date(year, month - 1, day);
+
+    const method = (calculationMethod || '').toLowerCase().includes('muslim world league')
+      ? CalculationMethod.MuslimWorldLeague()
+      : CalculationMethod.Karachi();
+    method.madhab = (madhhab || 'hanafi') === 'hanafi' ? Madhab.Hanafi : Madhab.Shafi;
+
+    const coordinates = new Coordinates(coords.lat, coords.lng);
+    const prayerTimes = new PrayerTimes(coordinates, prayerDate, method);
+
+    const fajr = formatToHHmm(prayerTimes.fajr);
+    const sunrise = formatToHHmm(prayerTimes.sunrise);
+    const dhuhr = formatToHHmm(prayerTimes.dhuhr);
+    const asr = formatToHHmm(prayerTimes.asr);
+    const maghrib = formatToHHmm(prayerTimes.maghrib);
+    const isha = formatToHHmm(prayerTimes.isha);
+    const imsak = fajr;
     const sunset = maghrib;
-    const isha = addMinutes(baseTimes[5], iftarOffset);
-    
-    // Midnight (Islamic midnight: Sunset to Fajr half-way)
-    // We calculate approx or just use fixed logic if needed. 
-    // Simple logic: 00:00 or derived? Let's leave it simple for now or derive from sunset/fajr.
-    const midnight = "00:00"; 
+    const midnight = "00:00";
 
-    // Hijri Conversion
-    const hijri = getHijriDate(date);
+    const hijri = getHijriDate(prayerDate, 0, TIME_ZONE);
 
     return {
         Fajr: fajr,
@@ -98,7 +117,7 @@ const calculateLocalPrayerTimes = async (districtId: string, date: Date): Promis
         Isha: isha,
         Imsak: imsak,
         Midnight: midnight,
-        readableDate: date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
+        readableDate: new Intl.DateTimeFormat('en-GB', { timeZone: TIME_ZONE, day: 'numeric', month: 'short', year: 'numeric' }).format(prayerDate),
         hijriDate: {
             day: hijri.day,
             month: hijri.month,
@@ -138,98 +157,163 @@ export interface PrayerCountdownState {
   currentWaqtName: string | null;
 }
 
-export const calculatePrayerCountdown = (times: PrayerTimesData, now: Date): PrayerCountdownState => {
-    const fajr = parseTimeString(times.Fajr, now);
-    const sunrise = parseTimeString(times.Sunrise, now);
-    const dhuhr = parseTimeString(times.Dhuhr, now);
-    const asr = parseTimeString(times.Asr, now);
-    const maghrib = parseTimeString(times.Maghrib, now);
-    const isha = parseTimeString(times.Isha, now);
-    
-    const nextFajr = new Date(fajr);
-    nextFajr.setDate(nextFajr.getDate() + 1);
-
-    // Forbidden: Sunrise to Ishraq (~15m), Zawal (~15m before Dhuhr), Sunset (~15m before Maghrib)
-    const zawalStart = new Date(dhuhr.getTime() - 15 * 60000); 
-    const sunsetStart = new Date(maghrib.getTime() - 15 * 60000);
-
-    let targetTime = fajr;
-    let startTime = new Date(fajr.getTime() - 4 * 60 * 60000); 
-    let label = "ফজর শুরু হতে বাকি";
-    let isForbidden = false;
-    let nextWaqtName = "Fajr";
-    let currentWaqtName = null;
-
-    if (now < fajr) {
-      targetTime = fajr;
-      startTime = new Date(fajr.getTime() - 2 * 60 * 60000); 
-      // Special: Pre-Fajr is Sehri time
-      label = "সেহরি শেষ হতে বাকি"; 
-      nextWaqtName = "Fajr";
-      currentWaqtName = "Isha"; 
-    } else if (now < sunrise) {
-      targetTime = sunrise;
-      startTime = fajr;
-      label = "ফজর শেষ হতে বাকি";
-      nextWaqtName = "Sunrise";
-      currentWaqtName = "Fajr";
-    } else if (now < dhuhr) {
-       if (now >= zawalStart) {
-         isForbidden = true;
-         label = "নিষিধ সময় (জাওয়াল)";
-         targetTime = dhuhr;
-         startTime = zawalStart;
-       } else {
-         targetTime = dhuhr;
-         startTime = sunrise;
-         label = "জুহর শুরু হতে বাকি";
-         nextWaqtName = "Dhuhr";
-         currentWaqtName = "Ishraq/Chasht";
-       }
-    } else if (now < asr) {
-      targetTime = asr;
-      startTime = dhuhr;
-      label = "জুহর শেষ হতে বাকি";
-      nextWaqtName = "Asr";
-      currentWaqtName = "Dhuhr";
-    } else if (now < maghrib) {
-       if (now >= sunsetStart) {
-         isForbidden = true;
-         label = "নিষিধ সময় (সূর্যাস্ত)";
-         targetTime = maghrib;
-         startTime = sunsetStart;
-       } else {
-         targetTime = maghrib;
-         startTime = asr;
-         label = "আসর শেষ হতে বাকি";
-         nextWaqtName = "Maghrib";
-         currentWaqtName = "Asr";
-       }
-    } else if (now < isha) {
-      targetTime = isha;
-      startTime = maghrib;
-      label = "মাগরিব শেষ হতে বাকি";
-      nextWaqtName = "Isha";
-      currentWaqtName = "Maghrib";
-    } else {
-      targetTime = nextFajr;
-      startTime = isha;
-      label = "ঈশা শেষ / ফজর শুরু";
-      nextWaqtName = "NextFajr";
-      currentWaqtName = "Isha";
-    }
-
-    const totalDuration = targetTime.getTime() - startTime.getTime();
-    const elapsed = now.getTime() - startTime.getTime();
-    const percent = Math.min(100, Math.max(0, (elapsed / totalDuration) * 100));
-    const remainingMs = targetTime.getTime() - now.getTime();
-    
-    const rSeconds = Math.floor((remainingMs / 1000) % 60);
-    const rMinutes = Math.floor((remainingMs / (1000 * 60)) % 60);
-    const rHours = Math.floor((remainingMs / (1000 * 60 * 60)));
-
-    const formatTime = (t: number) => t.toString().padStart(2, '0');
-    const remainingText = `${englishToBanglaDigits(formatTime(rHours))}:${englishToBanglaDigits(formatTime(rMinutes))}:${englishToBanglaDigits(formatTime(rSeconds))}`;
-
-    return { percent, remainingText, label, isForbidden, nextWaqtName, currentWaqtName };
+export interface ActivePrayerPeriod {
+  activeName: string | null;
+  nextName: string;
+  targetMinutes: number;
+  periodStartMinutes: number;
+  labelBn: string;
+  isForbidden: boolean;
 }
+
+export const getActivePeriod = (now: Date, times: PrayerTimesData): ActivePrayerPeriod => {
+  const fajr = timeToMinutes(times.Fajr);
+  const sunrise = timeToMinutes(times.Sunrise);
+  const dhuhr = timeToMinutes(times.Dhuhr);
+  const asr = timeToMinutes(times.Asr);
+  const maghrib = timeToMinutes(times.Maghrib);
+  const isha = timeToMinutes(times.Isha);
+
+  const { hour, minute } = getTimeZoneDateParts(TIME_ZONE, now);
+  const nowMinutes = hour * 60 + minute;
+  const dayMinutes = 24 * 60;
+
+  const preFajrStart = fajr - 120;
+  const zawalStart = dhuhr - 15;
+  const sunsetStart = maghrib - 15;
+
+  if (nowMinutes < fajr) {
+    if (nowMinutes >= preFajrStart) {
+      return {
+        activeName: 'Imsak',
+        nextName: 'Fajr',
+        targetMinutes: fajr,
+        periodStartMinutes: preFajrStart,
+        labelBn: 'সেহরি শেষ হতে বাকি',
+        isForbidden: false,
+      };
+    }
+    return {
+      activeName: 'Isha',
+      nextName: 'Fajr',
+      targetMinutes: fajr,
+      periodStartMinutes: isha - dayMinutes,
+      labelBn: 'ঈশা শেষ / ফজর শুরু',
+      isForbidden: false,
+    };
+  }
+
+  if (nowMinutes < sunrise) {
+    return {
+      activeName: 'Fajr',
+      nextName: 'Sunrise',
+      targetMinutes: sunrise,
+      periodStartMinutes: fajr,
+      labelBn: 'ফজর শেষ হতে বাকি',
+      isForbidden: false,
+    };
+  }
+
+  if (nowMinutes < dhuhr) {
+    if (nowMinutes >= zawalStart) {
+      return {
+        activeName: 'Ishraq/Chasht',
+        nextName: 'Dhuhr',
+        targetMinutes: dhuhr,
+        periodStartMinutes: zawalStart,
+        labelBn: 'নিষিধ সময় (জাওয়াল)',
+        isForbidden: true,
+      };
+    }
+    return {
+      activeName: 'Ishraq/Chasht',
+      nextName: 'Dhuhr',
+      targetMinutes: dhuhr,
+      periodStartMinutes: sunrise,
+      labelBn: 'জুহর শুরু হতে বাকি',
+      isForbidden: false,
+    };
+  }
+
+  if (nowMinutes < asr) {
+    return {
+      activeName: 'Dhuhr',
+      nextName: 'Asr',
+      targetMinutes: asr,
+      periodStartMinutes: dhuhr,
+      labelBn: 'যুহর শেষ হতে বাকি',
+      isForbidden: false,
+    };
+  }
+
+  if (nowMinutes < maghrib) {
+    if (nowMinutes >= sunsetStart) {
+      return {
+        activeName: 'Asr',
+        nextName: 'Maghrib',
+        targetMinutes: maghrib,
+        periodStartMinutes: sunsetStart,
+        labelBn: 'নিষিধ সময় (সূর্যাস্ত)',
+        isForbidden: true,
+      };
+    }
+    return {
+      activeName: 'Asr',
+      nextName: 'Maghrib',
+      targetMinutes: maghrib,
+      periodStartMinutes: asr,
+      labelBn: 'আসর শেষ হতে বাকি',
+      isForbidden: false,
+    };
+  }
+
+  if (nowMinutes < isha) {
+    return {
+      activeName: 'Maghrib',
+      nextName: 'Isha',
+      targetMinutes: isha,
+      periodStartMinutes: maghrib,
+      labelBn: 'মাগরিব শেষ হতে বাকি',
+      isForbidden: false,
+    };
+  }
+
+  return {
+    activeName: 'Isha',
+    nextName: 'Fajr',
+    targetMinutes: fajr + dayMinutes,
+    periodStartMinutes: isha,
+    labelBn: 'ঈশা শেষ / ফজর শুরু',
+    isForbidden: false,
+  };
+};
+
+export const calculatePrayerCountdown = (times: PrayerTimesData, now: Date): PrayerCountdownState => {
+  const period = getActivePeriod(now, times);
+
+  const { hour, minute, second } = getTimeZoneDateParts(TIME_ZONE, now);
+  const nowSeconds = hour * 3600 + minute * 60 + second;
+  const periodStartSeconds = period.periodStartMinutes * 60;
+  const targetSeconds = period.targetMinutes * 60;
+
+  const totalDuration = targetSeconds - periodStartSeconds;
+  const elapsed = nowSeconds - periodStartSeconds;
+  const percent = Math.min(100, Math.max(0, (elapsed / totalDuration) * 100));
+  const remainingSeconds = targetSeconds - nowSeconds;
+
+  const rSeconds = Math.max(0, Math.floor(remainingSeconds % 60));
+  const rMinutes = Math.max(0, Math.floor((remainingSeconds / 60) % 60));
+  const rHours = Math.max(0, Math.floor(remainingSeconds / 3600));
+
+  const formatTime = (t: number) => t.toString().padStart(2, '0');
+  const remainingText = `${englishToBanglaDigits(formatTime(rHours))}:${englishToBanglaDigits(formatTime(rMinutes))}:${englishToBanglaDigits(formatTime(rSeconds))}`;
+
+  return {
+    percent,
+    remainingText,
+    label: period.labelBn,
+    isForbidden: period.isForbidden,
+    nextWaqtName: period.nextName,
+    currentWaqtName: period.activeName,
+  };
+};

@@ -1,13 +1,72 @@
 
 import { DayMode, HijriDate, UserSettings } from '../types';
 
-export const getFormattedDate = (date: Date): string => {
+const DEFAULT_TIME_ZONE = 'Asia/Dhaka';
+
+export const getFormattedDate = (date: Date, timeZone: string = DEFAULT_TIME_ZONE): string => {
   return new Intl.DateTimeFormat('bn-BD', {
+    timeZone,
     weekday: 'long',
     year: 'numeric',
     month: 'long',
     day: 'numeric',
   }).format(date);
+};
+
+export const getTimeZoneDateParts = (timeZone: string, date: Date = new Date()) => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const year = Number(parts.find(p => p.type === 'year')?.value ?? date.getFullYear());
+  const month = Number(parts.find(p => p.type === 'month')?.value ?? date.getMonth() + 1);
+  const day = Number(parts.find(p => p.type === 'day')?.value ?? date.getDate());
+  const hour = Number(parts.find(p => p.type === 'hour')?.value ?? date.getHours());
+  const minute = Number(parts.find(p => p.type === 'minute')?.value ?? date.getMinutes());
+  const second = Number(parts.find(p => p.type === 'second')?.value ?? date.getSeconds());
+  return { year, month, day, hour, minute, second };
+};
+
+const getTimeZoneOffsetMinutes = (timeZone: string, date: Date = new Date()): number => {
+  const { year, month, day, hour, minute, second } = getTimeZoneDateParts(timeZone, date);
+  const asUTC = Date.UTC(year, month - 1, day, hour, minute, second);
+  return Math.round((asUTC - date.getTime()) / 60000);
+};
+
+export const getDateKeyInTimeZone = (date: Date, timeZone: string): string => {
+  const { year, month, day } = getTimeZoneDateParts(timeZone, date);
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+};
+
+export const formatTimeNow = (
+  date: Date = new Date(),
+  timeZone: string = DEFAULT_TIME_ZONE,
+  includeSeconds: boolean = true
+): string => {
+  const options: Intl.DateTimeFormatOptions = {
+    timeZone,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  };
+  if (includeSeconds) {
+    options.second = '2-digit';
+  }
+  return new Intl.DateTimeFormat('en-US', options).format(date);
+};
+
+export const formatTimeFromHHmm = (timeStr: string, timeZone: string = DEFAULT_TIME_ZONE): string => {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  const { year, month, day } = getTimeZoneDateParts(timeZone);
+  const offsetMinutes = getTimeZoneOffsetMinutes(timeZone);
+  const utcMs = Date.UTC(year, month - 1, day, hours, minutes, 0) - offsetMinutes * 60000;
+  return formatTimeNow(new Date(utcMs), timeZone, false);
 };
 
 // CRITICAL FIX: Use local date components instead of ISOString (UTC)
@@ -20,12 +79,13 @@ export const getFormattedDateKey = (date: Date): string => {
 };
 
 // Simple Hijri detection using Intl API
-export const getHijriDate = (date: Date, offset: number = 0): HijriDate => {
+export const getHijriDate = (date: Date, offset: number = 0, timeZone: string = DEFAULT_TIME_ZONE): HijriDate => {
   // Adjust date by offset days
   const adjustedDate = new Date(date);
   adjustedDate.setDate(adjustedDate.getDate() + offset);
 
   const formatter = new Intl.DateTimeFormat('en-u-ca-islamic-umalqura', {
+    timeZone,
     day: 'numeric',
     month: 'numeric',
     year: 'numeric',
@@ -51,8 +111,8 @@ export const getHijriDate = (date: Date, offset: number = 0): HijriDate => {
   };
 };
 
-export const detectDayMode = (date: Date, settings: UserSettings): DayMode => {
-  const hijri = getHijriDate(date, settings.moonSightingOffset);
+export const detectDayMode = (date: Date, settings: UserSettings, timeZone: string = DEFAULT_TIME_ZONE): DayMode => {
+  const hijri = getHijriDate(date, settings.moonSightingOffset, timeZone);
   
   // Eid ul-Fitr: 1st Shawwal (Month 10)
   const isEidFitr = hijri.month === 10 && hijri.day === 1;
@@ -64,8 +124,8 @@ export const detectDayMode = (date: Date, settings: UserSettings): DayMode => {
     return DayMode.EID;
   }
 
-  // Check if Friday (5 = Friday in JS getDay())
-  if (date.getDay() === 5) {
+  const weekDay = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' }).format(date);
+  if (weekDay === 'Fri') {
     return DayMode.FRIDAY;
   }
 

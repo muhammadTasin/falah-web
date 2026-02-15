@@ -1,14 +1,17 @@
 
 import React, { useState, useEffect } from 'react';
 import { fetchMonthlyPrayerTimes, PrayerTimesData, englishToBanglaDigits } from '../services/prayerTimeService';
+import { formatTimeFromHHmm } from '../services/dateUtils';
 import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, MapPin, X } from 'lucide-react';
 
 interface CalendarViewProps {
     districtId: string;
+    calculationMethod: string;
+    madhhab: 'hanafi' | 'shafi';
     onClose?: () => void;
 }
 
-const CalendarView: React.FC<CalendarViewProps> = ({ districtId, onClose }) => {
+const CalendarView: React.FC<CalendarViewProps> = ({ districtId, calculationMethod, madhhab, onClose }) => {
     const [currentDate, setCurrentDate] = useState(new Date());
     const [days, setDays] = useState<PrayerTimesData[]>([]);
     const [loading, setLoading] = useState(false);
@@ -19,14 +22,14 @@ const CalendarView: React.FC<CalendarViewProps> = ({ districtId, onClose }) => {
         const m = currentDate.getMonth() + 1;
         const y = currentDate.getFullYear();
         // Now synchronous and local
-        const data = await fetchMonthlyPrayerTimes(districtId, m, y);
+        const data = await fetchMonthlyPrayerTimes(districtId, m, y, calculationMethod, madhhab);
         setDays(data);
         setLoading(false);
     };
 
     useEffect(() => {
         loadMonthData();
-    }, [currentDate, districtId]);
+    }, [currentDate, districtId, calculationMethod, madhhab]);
 
     const changeMonth = (delta: number) => {
         const newDate = new Date(currentDate);
@@ -67,12 +70,7 @@ const CalendarView: React.FC<CalendarViewProps> = ({ districtId, onClose }) => {
     ];
 
     const formatTime = (t: string) => {
-        const [h, m] = t.split(':');
-        let hours = parseInt(h);
-        const ampm = hours >= 12 ? 'PM' : 'AM';
-        hours = hours % 12;
-        hours = hours ? hours : 12;
-        return `${englishToBanglaDigits(hours)}:${englishToBanglaDigits(m)} ${ampm}`;
+        return formatTimeFromHHmm(t, 'Asia/Dhaka');
     };
 
     return (

@@ -28,3 +28,18 @@ AI insights are for motivation and reflection only — not religious rulings (fa
 ```bash
 npm install
 npm run dev
+```
+
+## Recent Update: Prayer/Waqt Accuracy Fixes
+We fixed an issue where the app could sometimes show the wrong current prayer (for example, showing Dhuhr while Isha was already active).
+
+### What changed
+- Added safer clock handling by syncing with server time (with device-time fallback).
+- Improved refresh behavior when the app returns from background/locked screen.
+- Standardized prayer/date logic around `Asia/Dhaka` to avoid cross-timezone drift.
+- Fixed after-midnight day-boundary handling so logs and current waqt stay consistent.
+
+### Why it matters
+- More reliable "current prayer" detection.
+- Better consistency between shown time, selected district timings, and active waqt.
+- Fewer random mismatches caused by wrong device clock or stale app state.
